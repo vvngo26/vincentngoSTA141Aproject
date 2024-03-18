@@ -1,0 +1,185 @@
+```{r echo=TRUE, eval=TRUE, include = FALSE, fig.align='center'}
+
+# Introduction ######################
+library(tidyverse)
+library(knitr)
+library(glmnet)
+library(MASS)
+
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('./sessions/session',i,'.rds',sep=''))
+  print(session[[i]]$mouse_name)
+}
+
+Cori = list(session[[1]], session[[2]], session[[3]])
+Forssmann = list(session[[4]], session[[5]], session[[6]], session[[7]])
+Hench = list(session[[8]], session[[9]], session[[10]], session[[11]])
+Lederberg = list(session[[12]], session[[13]], session[[14]], session[[15]])
+
+
+
+# Exploratory analysis and Data integration ######################
+trials = numeric(18)
+neurons = numeric(18)
+feedback_types = list()
+stim_cond = list()
+
+for (i in 1:18){
+  neurons[i] = length(session[[i]]$brain_area)
+  trials[i] = length(session[[i]]$spks)
+  stim_cond = unique(session[[i]]$contrast_right)
+  feedback_types = unique(session[[i]]$feedback_type)
+}
+
+
+brain_area = list()
+for (i in 1:18){
+  brain_area[[i]] = unique(session[[i]]$brain_area)
+}
+
+all_brain_area = unique(unlist(brain_area))
+brain_area_matrix = matrix(0, nrow = 18, ncol = length(all_brain_area), dimnames = list(1:18, all_brain_area))
+for (i in 1:18) {
+  session_areas = unique(session[[i]]$brain_area)
+  brain_area_matrix[i, session_areas] = 1
+}
+
+heatmap(t(brain_area_matrix), Rowv = NA, Colv = NA, col = c("white", "orange"), scale = "none", xlab = "sessions", ylab = "brain areas")
+
+# Creating a sub-data frame
+data = list()
+
+for (i in 1:18){
+data[[i]] = tibble(
+    feedback = as.factor(session[[i]]$feedback_type),
+    contrast_left = as.factor(session[[i]]$contrast_left),
+    contrast_right = as.factor(session[[i]]$contrast_right),
+    outcome = rep('name', trials[i]),
+    spikes_mean = rep(0, trials[i]))
+
+  # Determine outcomes
+  for (j in 1:trials[i]){
+    if (session[[i]]$contrast_left[j] > session[[i]]$contrast_right[j]){
+      data[[i]]$outcome[j] = 1
+    }
+    else if (session[[i]]$contrast_left[j] < session[[i]]$contrast_right[j]){
+      data[[i]]$outcome[j] = 2
+    }
+    else if (session[[i]]$contrast_right[j] == 0 & session[[i]]$contrast_right[j] == 0){
+      data[[i]]$outcome[j] = 3
+    }
+    else{
+      data[[i]]$outcome[j] = 4
+    }
+
+    # spikes
+    number_spikes = session[[i]]$spks[[j]]
+    #data[[i]]$spike_i_mean[j] = sum(session[[i]]$spks[[j]]) / length(session[[i]]$spks[[1]])
+
+    total_spikes = apply(number_spikes, 1, sum)
+    data[[i]]$spikes_mean[j] = mean(total_spikes)
+  }
+data[[i]]$outcome = as.factor(data[[i]]$outcome)
+}
+
+# Plot showing success rates in each trial
+success = list()
+for (i in 1:18){
+  success[i] = sum(unlist(data[[i]]$feedback) == "1") / trials[i]
+}
+plot(1:18, success, xlab = "session", ylab = "success rate")
+
+
+
+# Boxplot of average spikes in each session
+summary_df = list()
+for (i in 1:18) {
+  summary_df[[i]] = summary(data[[i]]$spikes_mean)
+}
+summary_matrix = do.call(cbind, summary_df)
+boxplot(summary_df, xlab = "session", ylab = "average spikes ")
+
+# boxplot for each mouse
+summary_Cori = list()
+for (i in 1:3) {
+  summary_Cori[[i]] = summary(data[[i]]$spikes_mean)
+}
+summary_Forssmann = list()
+for (i in 4:7) {
+  summary_Forssmann[[i]] = summary(data[[i]]$spikes_mean)
+}
+summary_Hench = list()
+for (i in 8:11) {
+  summary_Hench[[i]] = summary(data[[i]]$spikes_mean)
+}
+summary_Lederberg = list()
+for (i in 12:18) {
+  summary_Lederberg[[i]] = summary(data[[i]]$spikes_mean)
+}
+summary_Cori = discard(summary_Cori, is.null)
+summary_Forssmann = discard(summary_Forssmann, is.null)
+summary_Hench = discard(summary_Hench, is.null)
+summary_Lederberg = discard(summary_Lederberg, is.null)
+
+par(mfrow = c(2,2))
+boxplot(summary_Cori, xlab = "session", ylab = "average spikes", main = "Cori")
+boxplot(summary_Forssmann, xlab = "session", ylab = "average spikes", main = "Forssmann")
+boxplot(summary_Hench, xlab = "session", ylab = "average spikes ", main = "Hench")
+boxplot(summary_Lederberg, xlab = "session", ylab = "average spikes", main = "Lederberg")
+par(mfrow = c(1,1))
+
+
+
+
+
+
+# Predictive modeling ######################
+set.seed(1)
+data_merge = bind_rows(data[[1]], data[[18]])
+sample = sample.int(n = length(data_merge$feedback), size = floor(.8 * length(data_merge$feedback)), replace = F)
+train = data_merge[sample, ]
+test  = data_merge[-sample, ]
+
+
+# SESSION 7 MODEL
+sample7 = sample.int(n = length(data[[7]]$feedback), size = floor(.8 * length(data[[7]]$feedback)), replace = F)
+train7 = data[[7]][sample7, ]
+test7  = data[[7]][-sample7, ]
+# GLM
+glm7 = glm(feedback~., data = train7, family="binomial")
+predictions7 = predict(glm7, test, type = "response")
+predictions7 = ifelse(predictions7 > 0.5, "1", "-1")
+#LDA
+lda7 = lda(feedback~., data = train7)
+predictions7 = predict(lda7, test)$class
+
+
+# SESSION 1 + 18 MODEL
+set.seed(1)
+glm = glm(feedback~., data = train, family="binomial")
+glm_predictions = predict(glm, test, type = "response")
+glm_predictions = ifelse(glm_predictions > 0.5, "1", "-1")
+
+lda = lda(feedback~., data = train)
+lda_predictions = predict(lda, test)$class
+
+
+
+
+
+# Predictive performance ###################
+glm_confusion_matrix = table(test$feedback, glm_predictions)
+glm_confusion_matrix
+glm_misclassification_er = 1 - sum(diag(glm_confusion_matrix)) / sum(glm_confusion_matrix)
+glm_misclassification_er
+
+lda_confusion_matrix = table(test$feedback, lda_predictions)
+lda_confusion_matrix
+lda_misclassification_er = 1 - sum(diag(lda_confusion_matrix)) / sum(lda_confusion_matrix)
+lda_misclassification_er
+
+par(mfrow = c(2,2))
+plot(glm)
+par(mfrow = c(1,1))
+```
